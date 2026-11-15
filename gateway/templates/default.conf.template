@@ -1,0 +1,116 @@
+# Reverse proxy that puts the frontend, backend and SFU behind one origin.
+#
+#   /api/*       -> be  (Go,   :8080)
+#   /ws          -> sfu (Rust, :9000) websocket signaling
+#   /internal/*  -> blocked; the SFU's internal REST API is for be only
+#   /*           -> fe  (nginx serving the static SPA, :80)
+#
+# Served over HTTPS (browsers only allow camera/mic in a secure context);
+# plain HTTP redirects to HTTPS. Hostnames are Docker DNS names; they are
+# resolved per request (not at startup) so a restarted container with a new
+# address is picked up without reloading the gateway.
+
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+# Request rate limits, keyed on the client address. Counters live in each
+# gateway instance's memory, so they are per instance, not global.
+# api:    general API and streaming traffic.
+# secret: endpoints that check a guessable secret (room passcode, admin
+#         token), so brute force has a much smaller budget.
+limit_req_zone $binary_remote_addr zone=api:10m    rate=20r/s;
+limit_req_zone $binary_remote_addr zone=secret:10m rate=10r/m;
+
+# Only send "Connection: upgrade" when the client actually asked to upgrade,
+# so plain HTTP requests keep normal keep-alive behaviour.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    return 301 https://$host:${GATEWAY_HTTPS_PORT}$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+
+    # Self-signed pair from gateway/gen-cert.sh, mounted at /etc/nginx/certs.
+    ssl_certificate     /etc/nginx/certs/capstone.crt;
+    ssl_certificate_key /etc/nginx/certs/capstone.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:capstone_ssl:10m;
+    ssl_session_timeout 1h;
+
+    set $fe  http://fe:80;
+    set $be  http://be:8080;
+    set $sfu http://sfu:9000;
+
+    # Blocked IPs, written by the webserver (its BLOCKLIST_FILE). One
+    # "deny <ip>;" per address, checked before any location, so REST, SSE
+    # and /ws are all refused here. The docker-entrypoint.d watcher reloads
+    # nginx when the file changes.
+    include /etc/nginx/blocklist/blocklist.conf;
+
+    # Refused requests get the webserver's own JSON error body, so clients
+    # see one error shape whether Go or the gateway refused them.
+    error_page 403 = @blocked;
+    location @blocked {
+        default_type application/json;
+        return 403 '{"error":{"code":"blacklisted","message":"this IP is blocked from the room"}}';
+    }
+
+    proxy_http_version 1.1;
+
+    # Over the limit gets 429 rather than the default 503.
+    limit_req_status 429;
+
+    location /api/ {
+        limit_req zone=api burst=40 nodelay;
+        proxy_pass $be;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
+
+    # Room creation (passcode) and admin reclaim (token) are the guessable
+    # ones, so they count against both zones.
+    location ~ ^/api/(rooms|rooms/[^/]+/admin/reclaim)$ {
+        limit_req zone=api burst=40 nodelay;
+        limit_req zone=secret burst=5 nodelay;
+        proxy_pass $be;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
+
+    # Server-sent events: no buffering, and don't cut the idle stream.
+    # Locations don't inherit limit_req, so it's repeated here.
+    location ~ ^/api/rooms/[^/]+/events$ {
+        limit_req zone=api burst=40 nodelay;
+        proxy_pass $be;
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+    }
+
+    location = /ws {
+        limit_req zone=api burst=40 nodelay;
+        proxy_pass $sfu;
+        include /etc/nginx/snippets/proxy-headers.conf;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        # Signaling sockets sit idle between messages; don't cut them at 60s.
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    location /internal/ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass $fe;
+        include /etc/nginx/snippets/proxy-headers.conf;
+    }
+}

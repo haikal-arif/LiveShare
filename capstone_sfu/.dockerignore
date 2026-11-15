@@ -1,0 +1,6 @@
+target/
+.git/
+.env
+.gitlab-ci.yml
+Dockerfile
+.dockerignore

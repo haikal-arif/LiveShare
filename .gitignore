@@ -1,0 +1,31 @@
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+gateway/certs/*
+!gateway/certs/.gitignore
+
+# Dependencies and build output
+node_modules/
+target/
+dist/
+bin/
+
+# Test and coverage output
+*.out
+*.test
+coverage.*
+
+# Editors and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Local scratch
+.scratch/

@@ -1,0 +1,9 @@
+.git/
+.env
+.env.*
+bin/
+e2e/
+coverage.out
+*_test.go
+Dockerfile
+.dockerignore

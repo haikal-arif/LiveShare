@@ -1,0 +1,301 @@
+<!doctype html>
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>POV Live Stream Data Flow</title>
+<style>
+/* Layout: one column of prose and figures, with a single wide SVG figure up top.
+   Palette: cool slate neutrals, one blue accent, and four protocol hues used only in the diagram. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #161b22;
+  --muted: #5b6573;
+  --rule: #d9dee6;
+  --accent: #2b62c9;
+  --rest: #2b62c9;
+  --ws: #7a4bd1;
+  --media: #1f8a5b;
+  --internal: #b7791f;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1116;
+    --surface: #161b22;
+    --fg: #e6eaf0;
+    --muted: #9aa4b2;
+    --rule: #2a313c;
+    --accent: #7aa7ff;
+    --rest: #7aa7ff;
+    --ws: #b596ff;
+    --media: #5fd39b;
+    --internal: #e8b04e;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1116;
+  --surface: #161b22;
+  --fg: #e6eaf0;
+  --muted: #9aa4b2;
+  --rule: #2a313c;
+  --accent: #7aa7ff;
+  --rest: #7aa7ff;
+  --ws: #b596ff;
+  --media: #5fd39b;
+  --internal: #e8b04e;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 880px; margin: 0 auto; padding-block: 32px 56px; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; margin: 0; }
+h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 19px; font-weight: 600; margin-top: 44px; margin-bottom: 12px; }
+h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+p { margin: 0 0 12px; max-width: 65ch; }
+code, .mono { font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+.kicker { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+.lede { color: var(--muted); font-size: 16px; margin-top: 12px; }
+header { border-bottom: 1px solid var(--rule); padding-bottom: 20px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 14px 0 0; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { display: inline-block; width: 22px; height: 0; border-top: 2.5px solid; }
+.legend i.dash { border-top-style: dashed; }
+
+figure { margin: 24px 0 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; }
+figure svg { display: block; width: 100%; height: auto; max-width: 100%; color: var(--fg); }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+.flows { display: grid; gap: 16px; margin-top: 8px; }
+.flow { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 20px; min-width: 0; }
+.flow h3 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tag { font-size: 11.5px; font-weight: 500; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.tag.rest { color: var(--rest); }
+.tag.ws { color: var(--ws); }
+.tag.media { color: var(--media); }
+.tag.internal { color: var(--internal); }
+.tag.sse { color: var(--accent); }
+ol.steps { margin: 6px 0 0; padding-left: 22px; }
+ol.steps li { margin: 0 0 6px; padding-left: 4px; min-width: 0; overflow-wrap: anywhere; }
+.trigger { color: var(--muted); font-size: 13.5px; margin: 0; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-variant-numeric: tabular-nums; }
+
+.gaps { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 10px; }
+.gaps li { background: var(--surface); border: 1px solid var(--rule); border-left: 3px solid var(--internal); border-radius: 6px; padding: 12px 14px; font-size: 14px; }
+
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+@media (min-width: 720px) { .flows { grid-template-columns: 1fr 1fr; } }
+</style>
+
+<main>
+<header>
+  <div class="kicker">Architecture · Data flow</div>
+  <h1>POV Live Stream Data Flow</h1>
+  <p class="lede">How a video feed moves from a sharer's camera to watchers' screens, and which process owns each piece of state. Three deployable parts sit behind one gateway: a Svelte SPA, a Go control plane and a Rust media plane.</p>
+  <div class="legend" aria-label="Diagram legend">
+    <span><i style="border-color: var(--rest)"></i>REST</span>
+    <span><i style="border-color: var(--ws)"></i>WebSocket signaling</span>
+    <span><i class="dash" style="border-color: var(--media)"></i>WebRTC media (UDP)</span>
+    <span><i style="border-color: var(--internal)"></i>Internal REST</span>
+  </div>
+</header>
+
+<figure>
+  <svg viewBox="0 0 820 430" role="img" aria-label="Clients reach the Go webserver for REST and the Rust SFU for WebSocket signaling, both through the gateway. Go calls the SFU over internal REST. Media flows directly from clients to the SFU over UDP.">
+    <defs>
+      <marker id="ah-rest" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--rest)"/></marker>
+      <marker id="ah-ws" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ws)"/></marker>
+      <marker id="ah-media" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--media)"/></marker>
+      <marker id="ah-internal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--internal)"/></marker>
+    </defs>
+
+    <!-- Nodes -->
+    <rect x="20" y="150" width="170" height="130" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="105" y="184" text-anchor="middle" font-size="14" font-weight="600" fill="currentColor">Svelte SPA</text>
+    <text x="105" y="204" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">sharer · watcher</text>
+    <text x="105" y="222" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">mock-publisher</text>
+    <text x="105" y="240" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">mock-subscriber</text>
+
+    <rect x="255" y="150" width="140" height="130" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="325" y="190" text-anchor="middle" font-size="14" font-weight="600" fill="currentColor">Gateway</text>
+    <text x="325" y="210" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">nginx, TLS</text>
+    <text x="325" y="228" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">routes by path</text>
+    <text x="325" y="305" text-anchor="middle" font-size="11.5" fill="var(--accent)">blocklist.conf (shared volume)</text>
+
+    <rect x="510" y="30" width="200" height="130" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="610" y="62" text-anchor="middle" font-size="14" font-weight="600" fill="currentColor">Go webserver</text>
+    <text x="610" y="82" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">control plane</text>
+    <text x="610" y="110" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">room · streamers · stage</text>
+    <text x="610" y="128" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">blacklist · SSE hub</text>
+
+    <rect x="510" y="250" width="200" height="150" rx="6" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="610" y="282" text-anchor="middle" font-size="14" font-weight="600" fill="currentColor">Rust SFU</text>
+    <text x="610" y="302" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">media plane</text>
+    <text x="610" y="330" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">peers · publishers</text>
+    <text x="610" y="348" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">subscriptions · layers</text>
+    <text x="610" y="366" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.7">relays RTP, no transcode</text>
+
+    <!-- Client to gateway -->
+    <line x1="190" y1="182" x2="253" y2="182" stroke="var(--rest)" stroke-width="2" marker-end="url(#ah-rest)"/>
+    <text x="222" y="172" text-anchor="middle" font-size="11.5" fill="var(--rest)">/api</text>
+    <line x1="190" y1="246" x2="253" y2="246" stroke="var(--ws)" stroke-width="2" marker-end="url(#ah-ws)"/>
+    <text x="222" y="264" text-anchor="middle" font-size="11.5" fill="var(--ws)">/ws</text>
+
+    <!-- Gateway to Go and SFU -->
+    <line x1="395" y1="170" x2="508" y2="110" stroke="var(--rest)" stroke-width="2" marker-end="url(#ah-rest)"/>
+    <text x="446" y="128" text-anchor="middle" font-size="11.5" fill="var(--rest)" transform="rotate(-18 446 128)">REST</text>
+    <line x1="395" y1="240" x2="508" y2="300" stroke="var(--ws)" stroke-width="2" marker-end="url(#ah-ws)"/>
+    <text x="446" y="290" text-anchor="middle" font-size="11.5" fill="var(--ws)" transform="rotate(28 446 290)">WebSocket</text>
+
+    <!-- Go to SFU -->
+    <line x1="610" y1="162" x2="610" y2="248" stroke="var(--internal)" stroke-width="2" marker-end="url(#ah-internal)"/>
+    <text x="622" y="210" font-size="11.5" fill="var(--internal)">internal REST</text>
+
+    <!-- Direct media, bypassing the gateway -->
+    <path d="M 105 280 V 395 H 510" fill="none" stroke="var(--media)" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#ah-media)"/>
+    <text x="300" y="386" text-anchor="middle" font-size="11.5" fill="var(--media)">WebRTC media over UDP, direct to the SFU</text>
+
+    <!-- SSE return path note -->
+    <text x="410" y="26" text-anchor="middle" font-size="11.5" fill="var(--accent)">SSE stage_updated, room_closed: Go → gateway → SPA</text>
+  </svg>
+  <figcaption>Control traffic goes through the gateway and media goes straight to the SFU, so the gateway never carries video. Go queries the SFU but never sees SDP or ICE.</figcaption>
+</figure>
+
+<h2>Flows</h2>
+<p>Each flow is a numbered sequence because the order matters. Endpoints are the ones in the API contracts.</p>
+
+<div class="flows">
+  <section class="flow" aria-labelledby="f1">
+    <h3 id="f1">1. Create a room <span class="tag rest">REST</span></h3>
+    <p class="trigger">Admin, once per server. Only one room can be open.</p>
+    <ol class="steps">
+      <li>SPA sends <code>POST /api/rooms</code> with the server passcode.</li>
+      <li>Go checks the passcode first, then fails with 409 if a room is already open.</li>
+      <li>Go stores the room in memory and signs an admin JWT with <code>admin: true</code> and <code>room_id</code>.</li>
+      <li>SPA keeps the token in <code>localStorage</code>. Go stores no tokens.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f2">
+    <h3 id="f2">2. Discover a room <span class="tag rest">REST</span></h3>
+    <p class="trigger">Every client, before it connects to anything.</p>
+    <ol class="steps">
+      <li>SPA sends <code>GET /api/rooms/:id</code>.</li>
+      <li>Go checks the blacklist (403 <code>blacklisted</code>) and the room (404 if missing or closed).</li>
+      <li>Go calls <code>GET /internal/rooms/:id/publishers</code> on the SFU. If the SFU is down, it returns 502 <code>sfu_unreachable</code>.</li>
+      <li>Go returns <code>sfu_ws_url</code>, <code>ice_servers</code> and the current publisher list.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f3">
+    <h3 id="f3">3. Publish a feed <span class="tag ws">WS</span> <span class="tag media">media</span></h3>
+    <p class="trigger">A sharer's camera, with simulcast layers <code>h</code>, <code>m</code> and <code>l</code>.</p>
+    <ol class="steps">
+      <li>SPA opens the SFU WebSocket and sends <code>join_as_publisher</code>.</li>
+      <li>SFU replies <code>joined</code> with a <code>peer_id</code>.</li>
+      <li>SPA sends <code>PUT /api/rooms/:id/streamers/:streamer_id</code> so Go can key the stage on a stable ID.</li>
+      <li>SPA sends <code>sdp_offer</code>. SFU answers, and ICE trickles both ways.</li>
+      <li>Media flows over UDP to the SFU. SFU broadcasts <code>publisher_joined</code> to the room.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f4">
+    <h3 id="f4">4. Watch a feed <span class="tag ws">WS</span> <span class="tag media">media</span></h3>
+    <p class="trigger">One peer connection per publisher the watcher selects.</p>
+    <ol class="steps">
+      <li>SPA opens the WebSocket and sends <code>join_as_subscriber</code>, then <code>request_track</code> with <code>target_peer</code>.</li>
+      <li>SFU sends <code>sdp_offer</code> with <code>from_peer</code>. The watcher answers.</li>
+      <li>SFU forwards the layer it has chosen for this watcher's pairing. Layer changes never renegotiate.</li>
+      <li>Watcher sends <code>connection_stats</code>. SFU may step the layer down and send <code>connection_quality</code>. A manual <code>set_preferred_layer</code> overrides it.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f5">
+    <h3 id="f5">5. Stage layout <span class="tag sse">SSE</span></h3>
+    <p class="trigger">An admin rearranges the stage; every open viewer updates.</p>
+    <ol class="steps">
+      <li>Admin sends <code>PUT /api/rooms/:id/stage</code> with <code>X-Admin-Token</code>.</li>
+      <li>Go replaces the template and placements in memory.</li>
+      <li>Go's hub pushes <code>stage_updated</code> on each open <code>GET /events</code> stream.</li>
+      <li>SPA redraws. Out-of-order versions are dropped, and <code>EventSource</code> reconnects on its own.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f6">
+    <h3 id="f6">6. Streamer goes live or offline <span class="tag internal">internal</span> <span class="tag sse">SSE</span></h3>
+    <p class="trigger">Only the SFU knows who is connected, so Go asks it.</p>
+    <ol class="steps">
+      <li>While at least one events stream is open, Go polls the SFU publisher list every 2 s.</li>
+      <li>Go compares the result with the last push. Only changed streamers trigger a push.</li>
+      <li>Go sends <code>stage_updated</code>. The streamer's placement stays and shows greyed out when offline.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f7">
+    <h3 id="f7">7. Block a sharer <span class="tag rest">REST</span> <span class="tag internal">internal</span></h3>
+    <p class="trigger">One admin action both kicks and blocks.</p>
+    <ol class="steps">
+      <li>Admin sends <code>POST /api/blacklist</code> with the <code>peer_id</code>.</li>
+      <li>Go asks the SFU for that peer's IP via <code>GET /internal/rooms/:id/peers/:peer_id</code>.</li>
+      <li>Go updates its in-memory list and rewrites <code>blocklist.conf</code> on the shared volume. A failed write rolls the block back.</li>
+      <li>The gateway's watcher sees the change, runs <code>nginx -t</code>, then <code>nginx -s reload</code>. From then on the IP gets 403 on every route, including <code>/ws</code>.</li>
+      <li>Go calls <code>POST .../peers/:peer_id/disconnect</code> so the existing connection drops.</li>
+    </ol>
+  </section>
+
+  <section class="flow" aria-labelledby="f8">
+    <h3 id="f8">8. Close the room <span class="tag rest">REST</span> <span class="tag internal">internal</span> <span class="tag sse">SSE</span></h3>
+    <p class="trigger">Admin ends the session.</p>
+    <ol class="steps">
+      <li>Admin sends <code>DELETE /api/rooms/:id</code>.</li>
+      <li>Go calls <code>POST /internal/rooms/:id/close</code>. SFU sends <code>room_closed</code> to every peer and drops the room.</li>
+      <li>Go sends <code>room_closed</code> on SSE and clears its room state. The admin token stops matching the open room.</li>
+    </ol>
+  </section>
+</div>
+
+<h2>Who owns what</h2>
+<p>Each piece of state has one owner. Go never tracks media, and the SFU never enforces rooms or the blacklist.</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>State</th><th>Owner</th><th>Lives in</th><th>Lost on restart</th></tr></thead>
+  <tbody>
+    <tr><td>Open room and admin JWT secret</td><td>Go</td><td>Memory, JWT key from <code>.env</code></td><td class="num">Yes, room is gone</td></tr>
+    <tr><td>Streamer registry (<code>streamer_id</code>, name, liveness)</td><td>Go, liveness from SFU</td><td>Memory</td><td class="num">Yes</td></tr>
+    <tr><td>Stage template and placements</td><td>Go</td><td>Memory</td><td class="num">Yes</td></tr>
+    <tr><td>IP blacklist</td><td>Go</td><td>Memory</td><td class="num">Yes</td></tr>
+    <tr><td>Gateway blocklist (<code>blocklist.conf</code>)</td><td>Go writes, gateway enforces</td><td>Shared volume</td><td class="num">Emptied when Go starts</td></tr>
+    <tr><td>Peers, publishers, subscriptions, layers</td><td>SFU</td><td>Memory</td><td class="num">Yes</td></tr>
+    <tr><td>Admin token</td><td>SPA</td><td><code>localStorage</code></td><td class="num">No, but it stops matching after a restart</td></tr>
+    <tr><td>Video frames</td><td>Nobody stores them</td><td>Relayed in RTP only</td><td class="num">N/A</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Known gaps</h2>
+<ul class="gaps">
+  <li><strong>Block delay.</strong> A block takes effect once the gateway reloads, about a second or two. If the SFU disconnect fails, that socket stays up until it closes.</li>
+  <li><strong>Unsupervised watcher.</strong> The gateway's blocklist loop has no supervisor. If it dies, new blocks stop applying until the gateway restarts.</li>
+  <li><strong>Watchers can't be blocked.</strong> Only publisher <code>peer_id</code>s appear in the admin view, so only sharers can be blacklisted.</li>
+  <li><strong>No token expiry.</strong> Admin tokens last until the room closes.</li>
+  <li><strong>One stream per publisher.</strong> A camera and a screen share can't yet be sent as separate tracks.</li>
+  <li><strong>All state is in memory.</strong> A Go or SFU restart drops the room, streamers, stage and blacklist.</li>
+</ul>
+</main>

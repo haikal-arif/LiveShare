@@ -1,0 +1,35 @@
+# Compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+__debug_bin*
+
+# Test and coverage output
+*.test
+*.out
+*.coverprofile
+coverage.*
+
+# Local tooling / hot reload
+tmp/
+.air.toml.bak
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
