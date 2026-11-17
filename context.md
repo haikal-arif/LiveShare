@@ -14,9 +14,11 @@ A video share app ("FlashLive"). One room per server. The admin opens a room, st
 | Rust SFU | `capstone_sfu/` | Media only (WebRTC/RTP), signaling over websocket, simulcast layer selection. |
 | Frontend | `capstone_fe/` | SvelteKit 2 / Svelte 5 single-page app (static build). Keeps `admin_token` and `streamer_id` in `localStorage`. |
 | Gateway | `gateway/` | nginx. The only public entry point in the Docker setup; puts the three above behind one origin. |
-| Docs | `capstone_docs/` | Weekly reports, product overview, architecture, API contract copy. |
+| TURN relay | `turn` service in `docker-compose.yml` | coturn. Optional (`TURN=1`); relays media for clients whose network blocks direct UDP. |
+| Terraform | `terraform/ec2-deploy/` | Creates the EC2 instance, security group and Elastic IP for the public deployment. |
+| Docs | `capstone_docs/` | Weekly reports, product overview, architecture, API contract copy, EC2 and TURN guides. |
 
-Each of `capstone_be`, `capstone_sfu`, `capstone_fe` and `capstone_docs` is its own git repo; this parent folder is not one.
+Since 2026-11-15 this folder is one git repo (monorepo); the components are plain folders in it, not separate repos or submodules.
 
 Three boundaries (details in `contracts.md`):
 1. Browser → Go: REST, public.
@@ -30,29 +32,31 @@ Two ways; both use the same ports and env names.
 **Local dev** (needs Go, Rust, Node):
 - `make setup` writes a `.env` in `capstone_be/`, `capstone_sfu/`, `capstone_fe/` (never overwrites) and installs frontend deps.
 - `make dev` runs all three (`make sfu|be|fe` for one); `make test` runs all unit tests; `make build` builds all three. `start-dev.sh` does the same as `make dev` with prefixed logs.
-- The backend reads `ROOM_PASSCODE`, `JWT_SECRET`, `SFU_BASE_URL` (required) and `ADDR`, `SFU_WS_URL`, `ALLOWED_ORIGINS`, `TRUSTED_PROXIES`, `ICE_SERVERS` from `capstone_be/.env` or the environment.
-- The SFU reads `BIND_ADDR` (default `0.0.0.0:9000`), `SFU_UDP_PORTS` (default `50000-50199`), `SFU_PUBLIC_IPS` (comma-separated, default none; see "Media addresses" below) and `ICE_SERVERS_JSON`. **`make setup` writes `SFU_ADDR` into `capstone_sfu/.env`, which the SFU does not read**, so locally it binds all interfaces and `/internal/*` is reachable from the network. Known, not fixed yet.
+- The backend reads `ROOM_PASSCODE`, `JWT_SECRET`, `SFU_BASE_URL` (required) and `ADDR`, `SFU_WS_URL`, `ALLOWED_ORIGINS`, `TRUSTED_PROXIES`, `ICE_SERVERS`, `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` (optional TURN entry appended to `ice_servers`) and `BLOCKLIST_FILE` (optional; where blocked IPs are written for the gateway) from `capstone_be/.env` or the environment.
+- The SFU reads `BIND_ADDR` (default `0.0.0.0:9000`), `SFU_UDP_PORTS` (default `50000-50199`), `SFU_PUBLIC_IPS` (comma-separated, default none; see "Media addresses" below), `ICE_SERVERS_JSON`, `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` (same meaning as the backend's) and `MAX_PARTICIPANTS` (most peers per room, sharers and watchers together; `0` or unset = no limit; a join past it gets `error` `invalid_state` "room is full"). `make setup` writes `BIND_ADDR=127.0.0.1:9000` into `capstone_sfu/.env`, and the Makefile loads that file (and `capstone_be/.env`) and exports it to `make sfu|be|dev`; neither program reads a `.env` itself. Run outside `make` without `BIND_ADDR`, the SFU binds all interfaces and `/internal/*` is reachable from the network. A `capstone_sfu/.env` created before 2026-11-17 still has the old `SFU_ADDR` key, which nothing reads: delete it and run `make setup`.
 
 **Docker** (everything behind the gateway):
-- `make docker-setup` writes the compose `.env` (never overwrites) and the gateway's self-signed cert (`gateway/gen-cert.sh`, covers localhost and this machine's IPs). `make docker-up` builds and starts; `make docker-down` stops; `make docker-logs` tails.
-- Open `https://<APP_HOST_IP>:8443` (HTTPS is required for camera/mic; the cert is self-signed, so each device must accept it once). Port 80 is not used because a host nginx may hold it.
-- `.env` variables are all `APP_*` so they never clash with the per-component `.env` files that the Makefile exports: `APP_HOST_IP` (LAN IP, detected from the default route), `APP_ROOM_PASSCODE`, `APP_JWT_SECRET`, `APP_HTTPS_PORT` (8443), `APP_HTTP_PORT` (8088), `APP_UDP_PORTS` (50000-50199), `APP_SUBNET` (172.28.0.0/24). If the LAN IP changes: delete `.env` and `gateway/certs/capstone.*`, run `make docker-setup`, then `make docker-up`.
+- `make docker-setup` creates or updates the compose `.env` through `scripts/docker-env.sh` (existing values are kept unless an option changes them) and writes the gateway's cert (`gateway/gen-cert.sh`: signed by mkcert when it's installed, self-signed otherwise; covers localhost and this machine's IPs). Options: `HOST_IP=`, `EC2=1` (public IP from instance metadata), `DOMAIN=`, `HTTPS_PORT=`, `HTTP_PORT=`, `TURN=1|0`. `make docker-up` builds and starts; `make docker-down` stops; `make docker-logs` tails; `make tls DOMAIN= EMAIL=` installs a Let's Encrypt cert (EC2); `make run-all` is the full LAN run (detect IP, refresh cert, open firewall, up, tear down on Ctrl-C).
+- Open `https://<APP_HOST_IP>:8443` (HTTPS is required for camera/mic; with a self-signed cert each device must accept it once). Locally port 80 is not used because a host nginx may hold it; on EC2 the ports are 443 and 80.
+- TURN: `TURN=1` sets `APP_TURN_ENABLED`, `APP_TURN_URLS` and `COMPOSE_PROFILES=turn`, which starts the `turn` service (coturn, host networking, 3478 udp/tcp, 5349 tls, relay UDP 49152-49200). See `capstone_docs/turn-relay.md`.
+- EC2: `capstone_docs/ec2-deployment.md` is the procedure (Terraform in `terraform/ec2-deploy/`, then `make docker-setup EC2=1 ...`, `make tls`, `make docker-up`). Terraform state is local and git-ignored.
+- `.env` variables are all `APP_*` so they never clash with the per-component `.env` files that the Makefile exports: `APP_HOST_IP` (LAN IP, detected from the default route), `APP_ROOM_PASSCODE`, `APP_JWT_SECRET`, `APP_HTTPS_PORT` (8443), `APP_HTTP_PORT` (8088), `APP_UDP_PORTS` (50000-50199), `APP_SUBNET` (172.28.0.0/24), `APP_PUBLIC_HOST` (hostname for links and the cert; same as the IP until `DOMAIN=` is given), `APP_MAX_PARTICIPANTS` (0), `APP_TURN_ENABLED`, `APP_TURN_USER`, `APP_TURN_PASSWORD`, `APP_TURN_URLS`, `APP_TURN_RELAY_MIN`/`_MAX`, `COMPOSE_PROFILES`. If the LAN IP changes: delete `.env` and `gateway/certs/capstone.*`, run `make docker-setup`, then `make docker-up`.
 - See "Docker setup" below for how it is wired.
 
 ## Where things are
 
 - `contracts.md`: full API contract, settled decisions, open items. Read before changing any endpoint.
-- `docker-compose.yml`, `Makefile`: Docker stack and dev tasks. `gateway/`: nginx image, config template, cert script.
+- `docker-compose.yml`, `Makefile`: Docker stack and dev tasks. `gateway/`: nginx image, config template, cert script, blocklist watcher. `scripts/docker-env.sh`: writes the compose `.env`. `terraform/ec2-deploy/main.tf`: the EC2 server. `loadtest/`: k6 + headless Chromium publisher load test.
 - `capstone_be/`: Go module `capstonewebserver` (Go 1.26.5), layered:
   - `cmd/webserver/`: `main.go` (env config, starts server and liveness poll), `router.go` (builds repositories, usecases, handlers, middleware; registers every route).
   - `internal/domain/`: types and errors (`room.go`, `auth.go`, `layout.go`, `event.go`).
   - `internal/dto/`: request/response shapes.
   - `internal/usecase/`: all business rules: `room`, `streamer`, `layout`, `blacklist`, `events`, `liveness` (polls the SFU, see decision 11), `jwt` (admin token sign/verify). `usecase.go` declares every port (interface) the usecases depend on; `//go:generate` produces `mock_ports_test.go` with mockgen. usecase never imports `repository` or `httpclient`.
-  - `internal/repository/`: in-memory `Store` (room, stage, streamers) and `BlacklistStore`. Depends only on `domain`/`dto`.
+  - `internal/repository/`: in-memory `Store` (room, stage, streamers) and `BlacklistStore`. `GatewayBlocklist` wraps the blacklist and mirrors it into `BLOCKLIST_FILE` as nginx `deny` lines. Depends only on `domain`/`dto`.
   - `internal/httpclient/`: `HttpClient`, the SFU's internal REST API as `usecase.RequestClient`: `GetPublishers`, `GetPeerIP` (404 → `domain.ErrPeerNotFound`), `DisconnectPeer`, `CloseRoom`.
   - `internal/events/`: in-memory hub fanning events out to SSE streams.
   - `internal/handler/`: HTTP handlers (`room`, `layout`, `streamer`, `blacklist`, `events`) and their tests.
-  - `internal/middleware/`: `auth` (admin JWT), `blacklist` (403 for blocked IPs), `ipsniffer` (client IP from `X-Real-IP`), `cors`. There is no rate limiter (dropped on purpose).
+  - `internal/middleware/`: `auth` (admin JWT), `blacklist` (403 for blocked IPs), `ipsniffer` (client IP from `X-Real-IP`), `cors`. There is no rate limiter in Go; the gateway does it.
   - `internal/reqctx/`: caller-IP context key shared by `middleware` and `usecase`.
   - `e2e/`: black-box tests (`go test -tags e2e ./e2e/...`) that build the binary and run it against a fake SFU.
 - `capstone_sfu/`: Rust workspace (`crates/common` shared message types, `crates/server`). Layered, enforced in CI by a grep that fails if `webrtc::`, `rtc::` or `axum::` appears under `domain/` or `service/`:
@@ -81,6 +85,8 @@ be ──http://sfu:9000/internal/*──▶ sfu                                
 - **Media addresses.** Inside a container the SFU only sees its own bridge address, which browsers can't reach. With `SFU_PUBLIC_IPS=<APP_HOST_IP>` the SFU replaces the address in every *host* ICE candidate it sends clients (`rewrite_host_candidate` in `infra/media/session.rs`), and the UDP range is published 1:1 (same port inside and out), so a browser on the LAN sends media to the host and Docker forwards it. Other candidate kinds (srflx from STUN) pass through unchanged. This only works when `APP_HOST_IP` is an address clients can reach. Don't rely on `SettingEngine::with_nat_1to1_ips`: webrtc-rs 0.21 stores it but never applies it.
 - **Firewall.** Docker publishes ports itself; if the host runs `ufw` for LAN access, the gateway port (`APP_HTTPS_PORT`) and the UDP range must be open to the LAN.
 - **Verified:** a headless Chromium publisher and subscriber exchanged real video through the gateway (`wss`, ICE host candidate = `APP_HOST_IP`, frames decoded); `/internal/*` returns 404 and `be`/`sfu` TCP ports are closed on the host.
+- **Blocklist at the gateway.** `be` writes blocked IPs to a volume shared with the gateway; `gateway/docker-entrypoint.d/40-blocklist-watch.sh` reloads nginx when the file changes. A blocked IP gets 403 `blacklisted` on every path, including `/ws`.
+- **Rate limits at the gateway.** 20 r/s per client address for `/api` and `/ws`; 10 r/min for `POST /api/rooms` and admin reclaim. Over the limit is 429.
 - **SSE and websockets** get their own locations (`proxy_buffering off`, 1 h read timeout), otherwise nginx's 60 s default cuts idle `/ws` and `/events` streams.
 
 ## Key decisions (summary; full list in `contracts.md`)
@@ -99,15 +105,15 @@ be ──http://sfu:9000/internal/*──▶ sfu                                
 These were reviewed and accepted; don't treat them as bugs to fix unless asked.
 
 - **Viewers can't be blacklisted:** the admin view lists publishers only, so a subscriber's `peer_id` is never shown to the admin.
-- **Direct SFU joins bypass the blacklist:** a client that opens the SFU websocket directly skips Go's check. Same root as the "room existence only enforced by Go" decision.
+- **Direct SFU joins bypass the blacklist only without the gateway:** in the Docker stack the gateway refuses blocked IPs on `/ws` too. In local `make dev` a client that opens the SFU websocket directly still skips Go's check.
+- **TURN credentials are shared:** one username and password for every client, handed out in `ice_servers`.
 - **Admin tokens never expire:** they stay valid until their room closes. There is no `exp` claim.
-- **No rate limiting** anywhere; fine for a trusted LAN.
+- **No rate limiting outside the gateway;** local `make dev` has none.
 
 ## Known issues (not decisions)
 
-- Local `make setup` writes `SFU_ADDR` to `capstone_sfu/.env`, but the SFU reads `BIND_ADDR`; run locally it listens on `0.0.0.0` (in Docker the gateway is the only way in, so this doesn't apply there).
-- `capstone_sfu/.env` is not in that repo's `.gitignore`.
-- `capstone_fe` and `capstone_docs/API-Contract.md` have uncommitted changes; the frontend's tests haven't been re-run against the refactored backend.
+- `capstone_fe/API-Contract.md` is an old copy and far behind `contracts.md`. `capstone_docs/API-Contract.md` and `capstone_sfu/API-Contract.md` were synced on 2026-11-17.
+- "Room is full" is reported as `invalid_state`; it has no error code of its own.
 - Test coverage is thinnest in `internal/repository` and `internal/middleware`.
 
 ## Working conventions
