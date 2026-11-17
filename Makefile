@@ -3,16 +3,17 @@
 # Run `make` or `make help` to list the targets (built from the ## comments).
 #
 # The webserver reads ROOM_PASSCODE, JWT_SECRET and SFU_BASE_URL from
-# capstone_be/.env (loaded below if present) or from the environment.
+# capstone_be/.env, and the SFU reads BIND_ADDR from capstone_sfu/.env. Neither
+# program loads a .env itself: both files are loaded below (if present) and
+# exported to the commands this Makefile runs. The frontend's .env is read by
+# Vite.
 
 BE_DIR  := capstone_be
 FE_DIR  := capstone_fe
 SFU_DIR := capstone_sfu
 
-ifneq (,$(wildcard $(BE_DIR)/.env))
-include $(BE_DIR)/.env
+-include $(BE_DIR)/.env $(SFU_DIR)/.env
 export
-endif
 
 .DEFAULT_GOAL := help
 
@@ -49,14 +50,15 @@ $(BE_DIR)/.env:
 		'ICE_SERVERS=stun:stun.l.google.com:19302' > $@
 	@echo "created $@ (change ROOM_PASSCODE)"
 
-# The SFU and frontend don't read any env yet; these hold the agreed
-# addresses so they stay in sync with the webserver's.
+# Localhost only: the SFU's /internal/* API shares this port with /ws, and
+# its own default (0.0.0.0) would expose it to the network.
 $(SFU_DIR)/.env:
-	@printf '%s\n' 'SFU_ADDR=127.0.0.1:$(SFU_PORT)' > $@
+	@printf '%s\n' 'BIND_ADDR=127.0.0.1:$(SFU_PORT)' > $@
 	@echo "created $@"
 
+# Baked into the frontend at build time (capstone_fe/src/lib/api.ts).
 $(FE_DIR)/.env:
-	@printf '%s\n' 'PUBLIC_API_URL=http://localhost:$(BE_PORT)' > $@
+	@printf '%s\n' 'PUBLIC_API_BASE_URL=http://localhost:$(BE_PORT)' > $@
 	@echo "created $@"
 
 dev: ## Run all three together (Ctrl-C stops all)
@@ -100,7 +102,7 @@ clean: ## Remove build outputs
 	rm -rf $(BE_DIR)/bin $(FE_DIR)/.svelte-kit $(FE_DIR)/build
 	cd $(SFU_DIR) && cargo clean
 
-# ---- Docker: the components behind an nginx gateway (see EC2-DEPLOY.md) ----
+# ---- Docker: the components behind an nginx gateway (see capstone_docs/ec2-deployment.md) ----
 # Options are given on the command line and update .env. Leave one out to
 # keep what .env already has.
 #   HOST_IP=1.2.3.4          public address clients reach (APP_HOST_IP)
@@ -143,12 +145,13 @@ docker-logs: ## Follow the stack's logs
 	docker compose logs -f
 
 # Let's Encrypt certificate for DOMAIN, copied over the gateway's cert (and
-# TURN's). Needs DOMAIN, EMAIL, certbot, and port 80 open to the internet.
+# TURN's; the TURN relay is restarted so it loads the new one). Needs DOMAIN,
+# EMAIL, certbot, and port 80 open to the internet.
 # Run again before it expires (about every 60 days) to renew.
 tls: env-file ## Get a Let's Encrypt cert for DOMAIN (EC2; needs EMAIL=)
 	@set -e; \
 	[ -n "$(EMAIL)" ] || { echo "EMAIL=you@example.com is required" >&2; exit 1; }; \
-	command -v certbot >/dev/null || { echo "certbot is not installed (see EC2-DEPLOY.md)" >&2; exit 1; }; \
+	command -v certbot >/dev/null || { echo "certbot is not installed (see capstone_docs/ec2-deployment.md)" >&2; exit 1; }; \
 	domain=$$(grep ^APP_PUBLIC_HOST= .env | cut -d= -f2); \
 	case "$$domain" in *[a-zA-Z]*) ;; *) echo "DOMAIN=name.example.com is required (an IP address cannot get a Let's Encrypt cert)" >&2; exit 1;; esac; \
 	port=$$(grep ^APP_HTTPS_PORT= .env | cut -d= -f2); \
@@ -161,6 +164,7 @@ tls: env-file ## Get a Let's Encrypt cert for DOMAIN (EC2; needs EMAIL=)
 	sudo chmod 644 gateway/certs/capstone.crt gateway/certs/capstone.key; \
 	trap - EXIT; \
 	docker compose up -d --build gateway; \
+	if grep -q '^COMPOSE_PROFILES=turn' .env; then docker compose restart turn || true; fi; \
 	echo "tls: certificate for $$domain installed; https://$$domain:$$port"
 
 # Full LAN run. The IP is re-detected and the cert regenerated on every run,

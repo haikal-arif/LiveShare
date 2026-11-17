@@ -73,6 +73,8 @@ Fetch everything a client needs to join a room: current publishers, and where/ho
 
 **Response 200**
 
+`ice_servers` entries are `RTCIceServer`-shaped: `urls` is required; `username` and `credential` are present only on TURN entries (long-term credentials, same for every client). STUN entries have neither.
+
 ```json
 {
   "room_id": "ABC-234",
@@ -451,6 +453,8 @@ The SFU relays RTP and never transcodes, so it can't make a lower-quality versio
 { "type": "join_as_subscriber", "room": "ABC-234" }
 ```
 
+(a room can have a participant limit, the SFU's `MAX_PARTICIPANTS`: sharers and watchers counted together, `0` or unset = no limit. A `join_as_*` past the limit gets `error` with code `invalid_state` and a reason like `room is full (2/2 participants)`. The websocket stays open and unjoined, so the client can send `join_as_*` again once someone has left.)
+
 ```json
 {
   "type": "sdp_offer",
@@ -595,7 +599,7 @@ The SFU relays RTP and never transcodes, so it can't make a lower-quality versio
 | `peer_not_found` | `target_peer` isn't a publisher the sender can address (unknown, or not yet requested with `request_track`). |
 | `wrong_role` | The message is for the other role, e.g. a publisher sending `request_track`. |
 | `invalid_sdp` | The SDP in `sdp_offer` / `sdp_answer` was rejected. |
-| `invalid_state` | The message doesn't fit the negotiation state, e.g. `ice_candidate` before `sdp_offer`, or an `sdp_answer` with no pending offer. |
+| `invalid_state` | The message doesn't fit the negotiation state, e.g. `ice_candidate` before `sdp_offer`, or an `sdp_answer` with no pending offer. Also a `join_as_*` refused because the room is full. |
 | `internal` | The SFU failed to set up a peer connection or offer. |
 )
 

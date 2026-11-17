@@ -1,6 +1,6 @@
 # Plan: free proof-of-concept deployment
 
-Status: **planning only, nothing deployed or changed.** Goal: a working demo of the whole app on free tiers. The frontend goes on Vercel. The Go backend, the Rust SFU, and the gateway go on one free VM, because the SFU needs open UDP media ports, which no free PaaS offers.
+Status: **superseded.** The app was deployed on one AWS EC2 instance instead, with the frontend served by the gateway rather than Vercel, and with a TURN relay. See [ec2-deployment.md](./ec2-deployment.md). This plan is kept for the hosting comparison in section 3. Originally: planning only, nothing deployed or changed. Goal: a working demo of the whole app on free tiers. The frontend goes on Vercel. The Go backend, the Rust SFU, and the gateway go on one free VM, because the SFU needs open UDP media ports, which no free PaaS offers.
 
 ## 1. Target architecture
 

@@ -10,7 +10,9 @@ The system lets one or more **publishers** share a local video stream into a roo
 
 Two auxiliary Rust CLI apps (**mock-publisher**, **mock-subscriber**) exercise the same public contracts as the SPA, for testing the pipeline without a browser.
 
-Everything sits behind a **reverse proxy** (nginx/traefik) which owns TLS termination and routes `/api/*` to Go and the websocket path to the SFU.
+Everything sits behind a **gateway** (nginx, `gateway/`) which owns TLS termination, routes `/api/*` to Go and `/ws` to the SFU, limits request rates and refuses blocked IPs.
+
+An optional **TURN relay** (coturn) carries media for clients whose network blocks direct UDP to the SFU. It's off on a LAN and on in the EC2 deployment.
 
 ## 2. High-Level Architecture
 
@@ -22,7 +24,7 @@ flowchart LR
         MS[mock-subscriber]
     end
 
-    RP[Reverse Proxy<br/>TLS termination]
+    RP[Gateway - nginx<br/>TLS, rate limits, blocklist]
 
     subgraph ControlPlane[Control Plane]
         GO[Go Webserver]
@@ -43,7 +45,14 @@ flowchart LR
     RP --> SFU
 
     GO -- internal REST --> SFU
+
+    TURN[coturn<br/>TURN relay, optional]
+    SPA -. UDP media, direct .-> SFU
+    SPA -. media when direct UDP is blocked .-> TURN
+    TURN -. UDP .-> SFU
 ```
+
+Media never goes through the gateway. It's UDP between the browser and the SFU, either direct or through the TURN relay.
 
 **Why split control plane from media plane:** discovering "who's publishing in this room" needs a real query surface once there's more than one publisher — a single in-process `mpsc` channel (the original design) only works if webserver and SFU are the same binary. Separating them costs a network hop, but mirrors how production SFU systems are structured and leaves room to run multiple SFU instances behind Go later without changing the public contract.
 
@@ -70,7 +79,9 @@ flowchart LR
 - Serves a small **internal-only** REST API for Go to query room/publisher state, stats and peer IPs, and to close a room or disconnect a peer.
 - Relays/negotiates WebRTC per pair: one `RTCPeerConnection` between the SFU and each publisher, and one between the SFU and each (subscriber, publisher) pair being watched.
 - Forwards simulcast layers (`h`/`m`/`l`) per subscriber↔publisher pairing, stepping a pairing down from the subscriber's `connection_stats`. It never transcodes and a layer switch never renegotiates.
-- Doesn't know which rooms Go created, so it never enforces room existence or the blacklist itself (see Section 8).
+- Enforces the optional participant limit (`MAX_PARTICIPANTS`, sharers and watchers counted together). A join past the limit gets `error` with code `invalid_state` ("room is full"); the websocket stays open so the client can try again.
+- Hands clients its ICE server list in `joined`: STUN, plus one TURN entry when `TURN_URLS` is set. It uses the same list for its own peer connections.
+- Doesn't know which rooms Go created, so it never enforces room existence or the blacklist itself (see Section 9).
 
 ### 3.4 mock-publisher / mock-subscriber
 - Rust CLI binaries that speak the exact same contracts as the SPA: hit Go's discovery endpoint first, then connect to the SFU's websocket.
@@ -78,9 +89,18 @@ flowchart LR
 - `mock-subscriber` requests a publisher's track and writes received media into a local folder.
 - Exist to exercise the webserver+SFU pipeline without needing a browser.
 
-### 3.5 Reverse Proxy
-- Terminates TLS (`wss://` for the SFU, `https://` for Go/static assets).
-- Routes by path/host to Go vs. the SFU; the SPA and mock apps never need to know the real backend addresses, just the public-facing ones.
+### 3.5 Gateway (nginx)
+- The only public entry point for HTTP traffic in the Docker stack. Terminates TLS (`wss://` for the SFU, `https://` for Go and the static assets); plain HTTP redirects to HTTPS.
+- Routes by path: `/api/*` to Go, `/ws` to the SFU, everything else to the frontend. `/internal/*` returns 404, which keeps the SFU's internal REST API private even though it shares a port with `/ws`.
+- Sets `X-Real-IP` from the connection, never from a client header. Admin reclaim and the blacklist depend on it.
+- **Rate limits** per client address: 20 requests/s for the API and `/ws`, and 10 requests/min for the two endpoints that check a guessable secret (room creation and admin reclaim). Over the limit gets 429.
+- **Blocklist:** Go writes each blocked IP as a `deny` line into a file on a volume shared with the gateway (`BLOCKLIST_FILE`). A watcher in the gateway container reloads nginx when the file changes, without dropping open connections. A blocked IP is then refused on every path, including `/ws`, with the same 403 `blacklisted` body Go uses.
+
+### 3.6 TURN relay (coturn, optional)
+- Relays media for clients that can't send UDP straight to the SFU (mobile carriers, restrictive Wi-Fi).
+- Runs as the `turn` service in the compose file, only when the `turn` profile is on (`make docker-setup TURN=1`). It uses host networking and listens on 3478 (UDP and TCP) and 5349 (TLS), with relay ports 49152–49200.
+- Go and the SFU don't talk to it. They only hand its URLs and the shared credential to clients inside `ice_servers`; the browser's ICE decides whether to use it.
+- Details and operations are in [`turn-relay.md`](./turn-relay.md).
 
 ## 4. Communication Boundaries & Protocols
 
@@ -175,19 +195,44 @@ sequenceDiagram
 | Admin auth is a stateless JWT (`admin`, `room_id`) | Go stores no tokens; the `room_id` claim stops reuse across rooms. Tokens don't expire until the room closes. |
 | Simulcast, subscriber picks the layer, SFU steps down | The SFU only relays RTP and can't transcode. No automatic step up, and a layer switch never renegotiates. |
 | Blocking an IP also disconnects the blocked peer | One admin action covers both "kick" and "block". Go resolves the peer's IP through the SFU, stores the block, then asks the SFU to disconnect the peer. |
+| Blocked IPs are also refused at the gateway | Go's check only covers the REST call a normal client makes first. A `deny` list in nginx covers every path, including the SFU's websocket, without teaching the SFU about the blacklist. |
+| TURN is an optional compose profile | A LAN doesn't need a relay, and it needs extra open ports. The public deployment turns it on; nothing else changes. |
+| The participant limit lives in the SFU | The SFU is the only part that knows how many peers are really connected. |
+| One EC2 instance, described in Terraform | The SFU needs inbound UDP, which rules out most free hosting. One instance keeps the in-memory design as it is; Terraform makes the firewall rules repeatable and easy to delete. |
 | SFU assigns `peer_id` | The SFU is the only party that actually needs to track connection identity in real time. |
 | `target_peer` only on subscriber-side messages | Reflects the real cardinality: one connection for a publisher, many for a subscriber. |
 | Publisher impolite / SFU polite; subscriber pairing has no glare case | Standard WebRTC perfect-negotiation pattern, applied only where glare can actually occur. |
 
-## 8. Open Items / Future Work
+## 8. Deployment
 
-- **Blacklist bypass via the SFU** — Go enforces the blacklist on `GET /api/rooms/:room_id`, but a client that opens the SFU websocket directly can still join. Closing this needs Go to push the blocked list to the SFU.
+The same compose file (`docker-compose.yml`) serves both setups. `make docker-setup` writes its `.env`; the options decide which setup it is.
+
+| | Local network | EC2 (public internet) |
+|---|---|---|
+| Host | A laptop on the venue Wi-Fi | One EC2 instance (`c7i-flex.large`, Ubuntu 24.04) with an Elastic IP |
+| Created by | — | Terraform (`terraform/ec2-deploy/main.tf`): security group, instance, Elastic IP |
+| Address | The LAN IP, `https://<ip>:8443` | A DuckDNS name on port 443 |
+| Certificate | mkcert (or self-signed) from `gateway/gen-cert.sh` | Let's Encrypt, through `make tls` |
+| Media address (`SFU_PUBLIC_IPS`) | The LAN IP | The Elastic IP, read from the instance metadata (`EC2=1`) |
+| TURN relay | Off | On (`TURN=1`) |
+| Open ports | Gateway HTTPS port, UDP 50000–50199 | 80, 443, 3478, 5349, UDP 49152–49200, UDP 50000–50199; 22 from one IP |
+
+Only the gateway's ports, the SFU's UDP range and the TURN ports are published. Go, the frontend and the SFU's TCP port exist only on the compose network.
+
+The full EC2 procedure is in [`ec2-deployment.md`](./ec2-deployment.md).
+
+## 9. Open Items / Future Work
+
+- **Blacklist bypass via the SFU** — closed in the Docker stack: the gateway refuses a blocked IP on `/ws` as well. It still applies when the SFU is run without the gateway (local `make dev`), where only Go's check on `GET /api/rooms/:room_id` exists.
+- **Shared TURN credential** — every client gets the same TURN username and password. Short-lived credentials per join would need Go to generate them.
+- **"Room is full" has no code of its own** — the SFU reports it as `invalid_state`, so the frontend can only tell it apart by the reason text.
+- **Single instance** — the EC2 deployment is one server with in-memory state. A restart of the backend drops the room and the blocklist.
 - **Watchers can't be blocked** — only `peer_id`s the admin can see (publishers) can be blacklisted. Options: expose subscriber `peer_id`s in an admin-only view, or accept publisher-only blocking.
 - **Admin token expiry** — tokens don't expire; add an `exp` claim if "until the room closes" is too long.
 - **Multi-track per publisher** — `request_track` currently implies a single stream per publisher; camera + screen-share as separate tracks isn't modeled yet.
 - **Multiple SFU instances** — Go's discovery response would need to include which SFU instance owns a given room; not needed at current scale.
-- **TLS in local dev** — reverse proxy handles this in the deployed setup; local development story (self-signed certs, or plain `ws://` over localhost) not yet decided.
+- **TLS in local dev** — settled: `gateway/gen-cert.sh` makes an mkcert certificate for the Docker stack (self-signed without mkcert). `make dev` without Docker uses plain `http://` and `ws://` on localhost.
 
-## 9. Superseded Design (for history)
+## 10. Superseded Design (for history)
 
 An earlier iteration combined webserver + SFU into a single Rust binary, with an axum websocket handler forwarding to an internal SFU task over `tokio::sync::mpsc`. That skeleton is preserved in `video-share-skeleton.zip` for reference but no longer matches this architecture — it didn't have a way for a control plane to query room state, since everything lived inside one process. The `sfu`-internal module pattern (per-room, per-peer state) from that skeleton is still a reasonable starting point for the new SFU's internals; only the transport (serving WS directly instead of via a separate webserver module) needs to change.

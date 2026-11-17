@@ -29,3 +29,12 @@ Thumbs.db
 
 # Local scratch
 .scratch/
+
+# Terraform: state and saved plans hold account details, never commit
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform/**/plan
+terraform/**/terraform_plan*
+*.tfvars

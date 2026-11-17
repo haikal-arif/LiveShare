@@ -7,10 +7,10 @@
 | Field | Value |
 | --- | --- |
 | Project name | Local POV Live Stream |
-| Status | In Progress (8 of 9 original features Done; feature 5 in progress; features 10–15 Done) |
+| Status | In Progress (8 of 9 original features Done; feature 5 in progress; features 10–21 Done) |
 | Owner | Muhammad Haikal AlFarizi (kal) |
 | Target live date | Capstone Week |
-| Summary | A local web app that allows event participants to stream live video feeds over a shared network so attendees in the back can watch different points of view. |
+| Summary | A web app that allows event participants to stream live video feeds over a shared network so attendees in the back can watch different points of view. It runs on a local network, and can also be deployed on a cloud server for access over the internet. |
 
 ## Change Log
 
@@ -22,6 +22,7 @@
 | 2026-09-30 | Watchers pick a quality per stream (High/Mid/Low); the server lowers it automatically when the connection can't keep up and marks it "auto"; watchers retry a higher quality by picking it again (no automatic step up) |
 | 2026-11-03 | Status sync against the codebase: features 1–4, 6–9 marked Done; feature 5 (network discovery) In Progress; added features 10–15 that are implemented but were missing from the scope (real-time events, streamer live status, room close, manual code join, connection stats, Docker Compose deployment) |
 | 2026-10-14 | Aligned with the API contract: room creation needs the server passcode; the admin credential is a token (the "secret key"); layout is a stage template plus streamer placements, and an offline streamer's placement stays (greyed out); blocking a sharer's IP also disconnects them (no separate kick); removed the 2-sharer/5-watcher cap and the block-own-IP guard |
+| 2026-11-17 | Added features 16–21, implemented since the last sync: TURN relay for networks that block direct media, participant limit per room, cloud deployment on EC2 with Terraform and a trusted certificate, blocklist and rate limits enforced at the gateway, full stream view, and screen sharing. Public internet access moved from out of scope to supported through the cloud deployment; NFR 3 and the limitations updated to match |
 
 ## 1. Background & Problem
 
@@ -48,6 +49,12 @@
 | 13 | Manual Room Code Join | Participants can enter a room code by hand as an alternative to scanning the QR code. | P1 | Done |
 | 14 | Connection Stats Reporting | Clients report packet counters every 2 seconds; the SFU exposes per-room stats that feed the quality adjuster. | P1 | Done |
 | 15 | Local Deployment (Docker Compose + HTTPS Gateway) | The frontend, Go backend, Rust SFU, and an HTTPS gateway are packaged to start together with Docker Compose on the local network. | P1 | Done |
+| 16 | TURN Relay for Restricted Networks | An optional relay server (coturn) carries the video for participants whose network blocks a direct connection, such as phones on mobile data. | P1 | Done |
+| 17 | Participant Limit | Whoever runs the server can cap how many people (sharers and watchers together) a room accepts; further joins are refused with "room is full" until someone leaves. | P2 | Done |
+| 18 | Cloud Deployment (EC2 + Terraform) | The whole stack runs on one AWS EC2 server with a public name and a trusted HTTPS certificate, so participants can join over the internet. Terraform creates the server and its firewall rules. | P1 | Done |
+| 19 | Gateway Protection (Blocklist + Rate Limits) | Blocked IPs are refused at the gateway on every path, including the media server's signaling. Requests are rate limited, with a much smaller budget for passcode and admin-reclaim attempts. | P1 | Done |
+| 20 | Full Stream View | A watcher opens one stream full screen, with its quality picker, a mini stage map showing where that camera is, and previous/next to move between streams. | P1 | Done |
+| 21 | Screen Sharing | A sharer on a desktop browser can switch their stream from the camera to a screen or window and back. | P2 | Done |
 
 ## 3. User Stories
 
@@ -128,6 +135,8 @@ Allows users on the local network to discover active video feeds and watch a sel
 | --- | --- |
 | The selected stream goes offline | Display a "Stream Ended" notice and prompt the user to select another feed. |
 | No streams are currently active | Display an empty state message ("No active feeds right now"). |
+| The room has reached its participant limit | The join is refused with a "room is full" message. The participant can try again once someone has left. |
+| Watcher's network blocks direct video (e.g. mobile data) | When the server runs with the TURN relay, the video goes through the relay without the watcher doing anything. Without the relay, the page loads but no video arrives. |
 | Watcher's connection is weak (high packet loss / low bandwidth) | Server switches that watcher to a lower quality layer without interrupting playback. The quality picker on that stream changes to the lower level, tagged "auto". It stays there until the watcher picks a higher quality again to retry; if the connection still can't keep up, it's lowered again. |
 
 ### 4.3 — Room Management (Admin)
@@ -160,14 +169,17 @@ Allows event owner to create and manage their video sharing room.
 | --- | --- | --- |
 | 1 | Performance | Low latency transmission over the local Wi-Fi network with high bitrate support. |
 | 2 | Usability | One-touch connection flow via QR code scanning without requiring account creation. |
-| 3 | Network Constraints | Operate entirely within a local network without requiring public internet access. |
+| 3 | Network Constraints | The local setup operates entirely within a local network without requiring public internet access. The cloud deployment is the separate option for participants who aren't on the same network. |
+| 6 | Security | All traffic uses HTTPS. Only the gateway, the media ports and the TURN ports are reachable from outside; request rates are limited per client address. |
 | 4 | Room Model | One room supported per network/server instance for the MVP; the server does not manage multiple concurrent rooms. |
 | 5 | Data Lifetime | Room state and the IP blocklist live only as long as the server process is running (an event or up to a day); nothing persists after the server stops. |
 
 ## 6. Known Limitations & Future Improvements
 
-* **Out of Scope (MVP):** Accessing streams over the public internet (restricted purely to local network connections).
-* **Known Limitation:** The IP blocklist is enforced by the web server when a client asks to join. A client that connects straight to the media server can still get in until the blocklist is also checked there. Only sharers can be blocked for now; watchers have no ID the admin can see.
+* **No longer out of scope:** Accessing streams over the public internet. It was restricted to local network connections for the MVP and is now supported through the cloud deployment (feature 18) with the TURN relay (feature 16).
+* **Known Limitation:** Only sharers can be blocked for now; watchers have no ID the admin can see. The blocklist is by IP, so on the public internet it also blocks everyone sharing that address (for example one mobile carrier gateway), and a blocked person can return from another network.
+* **Known Limitation:** The TURN relay uses one username and password for every participant.
+* **Known Limitation:** The cloud deployment is a single server. Room state is still in memory, so a restart ends the room.
 * **Future Improvement:** Automatically step a downgraded watcher back up once the connection recovers, which needs the server to probe for spare bandwidth rather than rely on the watcher's current receive rate.
 
 ## 7. WireFrame 
