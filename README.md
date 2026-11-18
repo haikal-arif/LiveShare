@@ -44,6 +44,8 @@ APP_ROOM_PASSCODE=<choose-a-passcode>
 
 `APP_MAX_PARTICIPANTS` limits how many people a room accepts (sharers and watchers together). `0` means no limit. The file is git-ignored.
 
+If the machine is on two networks at once (for example Wi-Fi plus USB tethering to a phone), add the second address so devices on both can join: `make docker-setup EXTRA_IPS=<other-ip>` (comma-separated for more; `EXTRA_IPS=none` removes them). The certificate must also cover that address; `gateway/gen-cert.sh` includes every IP the machine has when it runs.
+
 ### 2. Start the stack
 
 ```bash

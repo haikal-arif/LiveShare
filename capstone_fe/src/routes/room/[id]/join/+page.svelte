@@ -7,6 +7,7 @@
 	import Button from '$lib/components/Button.svelte';
 	import Icon from '$lib/icons/Icon.svelte';
 	import { roomSession } from '$lib/room.svelte';
+	import { facingModeOf, isPhone, type FacingMode } from '$lib/device';
 
 	let roomId = $derived(page.params.id as string);
 	let videoEl: HTMLVideoElement | undefined = $state();
@@ -14,18 +15,33 @@
 	let cameraError = $state<string | null>(null);
 	let starting = $state(false);
 	let localStream: MediaStream | null = $state(null);
+	/** The camera phones ask for first; desktops leave it to the browser. */
+	let requestedFacing: FacingMode = 'user';
+	let facingMode = $state<FacingMode>('user');
 
 	$effect(() => {
 		let cancelled = false;
+		const phone = isPhone();
+		requestedFacing = phone ? 'environment' : 'user';
 		navigator.mediaDevices
-			// Browsers only send all three simulcast layers from ~720p up.
-			.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true })
+			.getUserMedia({
+				video: {
+					// Phones start on the back camera; `ideal` still falls back to any camera.
+					...(phone && { facingMode: { ideal: requestedFacing } }),
+					// Browsers only send all three simulcast layers from ~720p up.
+					width: { ideal: 1280 },
+					height: { ideal: 720 }
+				},
+				audio: true
+			})
 			.then((stream) => {
 				if (cancelled) {
 					stream.getTracks().forEach((t) => t.stop());
 					return;
 				}
 				localStream = stream;
+				const track = stream.getVideoTracks()[0];
+				if (track) facingMode = facingModeOf(track, requestedFacing);
 				if (videoEl) videoEl.srcObject = stream;
 			})
 			.catch(() => {
@@ -46,7 +62,7 @@
 	async function startLiveStreaming() {
 		if (!localStream) return;
 		starting = true;
-		roomSession.setLocalPreview(localStream, name.trim() || 'You');
+		roomSession.setLocalPreview(localStream, name.trim() || 'You', requestedFacing);
 		try {
 			await roomSession.startPublishing(roomId);
 			goto(resolve('/room/[id]?role=publisher', { id: roomId }));
@@ -72,7 +88,13 @@
 		<div class="center-col">
 			<div class="preview-circle">
 				{#if localStream}
-					<video bind:this={videoEl} autoplay playsinline muted></video>
+					<video
+						bind:this={videoEl}
+						class:mirrored={facingMode === 'user'}
+						autoplay
+						playsinline
+						muted
+					></video>
 				{:else}
 					<Icon name="user" size={40} />
 				{/if}
@@ -119,6 +141,10 @@
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+	}
+
+	/* Selfie-style preview for the front camera only; the back camera shows the scene as-is. */
+	.preview-circle video.mirrored {
 		transform: scaleX(-1);
 	}
 </style>

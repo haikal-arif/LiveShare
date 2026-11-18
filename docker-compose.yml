@@ -14,6 +14,10 @@
 #                       the SFU advertises it as its media (ICE) address
 #   APP_PUBLIC_HOST     hostname for links and the certificate (DuckDNS name),
 #                       or the same as APP_HOST_IP
+#   APP_EXTRA_IPS       more addresses clients reach this machine on, e.g. a
+#                       laptop on Wi-Fi and USB tethering at once (optional)
+#   APP_SFU_PUBLIC_IPS  derived: APP_HOST_IP plus APP_EXTRA_IPS
+#   APP_ALLOWED_ORIGINS derived: https origins for APP_PUBLIC_HOST and APP_EXTRA_IPS
 #   APP_ROOM_PASSCODE   passcode required to create a room
 #   APP_JWT_SECRET      signs admin tokens
 #   APP_HTTPS_PORT      host port for the gateway's HTTPS (default 8443)
@@ -61,14 +65,16 @@ services:
       ROOM_PASSCODE: ${APP_ROOM_PASSCODE:?run make docker-setup}
       JWT_SECRET: ${APP_JWT_SECRET:?run make docker-setup}
       SFU_BASE_URL: http://sfu:9000
-      # What browsers use, so it goes through the gateway over TLS.
-      SFU_WS_URL: wss://${APP_PUBLIC_HOST:?run make docker-setup}:${APP_HTTPS_PORT:-8443}/ws
+      # What browsers use, through the gateway over TLS. A path, so each
+      # browser connects to the address it loaded the page from (any of
+      # APP_PUBLIC_HOST and APP_EXTRA_IPS).
+      SFU_WS_URL: /ws
       ICE_SERVERS: stun:stun.l.google.com:19302
       TURN_URLS: ${APP_TURN_URLS:-}
       TURN_USERNAME: ${APP_TURN_USER:-}
       TURN_CREDENTIAL: ${APP_TURN_PASSWORD:-}
-      # Without the port (443) and with it (8443 locally); both are accepted.
-      ALLOWED_ORIGINS: https://${APP_PUBLIC_HOST:?run make docker-setup},https://${APP_PUBLIC_HOST}:${APP_HTTPS_PORT:-8443}
+      # Every host, without the port (443) and with it (8443 locally).
+      ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?run make docker-setup}
       # Only the gateway sets X-Real-IP, so only this network may.
       TRUSTED_PROXIES: ${APP_SUBNET:-172.28.0.0/24}
       # Gateway enforces these blocks; the gateway mounts this volume.
@@ -88,8 +94,9 @@ services:
       # Most peers (sharers + watchers) per room; 0 or unset = no limit.
       MAX_PARTICIPANTS: ${APP_MAX_PARTICIPANTS:-0}
       # The container's own address is unreachable from browsers; advertise
-      # the host's instead. Media reaches it through the published UDP range.
-      SFU_PUBLIC_IPS: ${APP_HOST_IP:?run make docker-setup}
+      # the host's instead (one candidate per address, so clients on either
+      # network find one). Media reaches it through the published UDP range.
+      SFU_PUBLIC_IPS: ${APP_SFU_PUBLIC_IPS:?run make docker-setup}
       ICE_SERVERS_JSON: '[{"urls":["stun:stun.l.google.com:19302"]}]'
       TURN_URLS: ${APP_TURN_URLS:-}
       TURN_USERNAME: ${APP_TURN_USER:-}

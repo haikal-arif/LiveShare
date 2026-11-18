@@ -10,15 +10,19 @@
 #   HTTPS_PORT=443           gateway HTTPS port on the host
 #   HTTP_PORT=80             gateway HTTP redirect port on the host
 #   TURN=1|0                 run the TURN relay or not
+#   EXTRA_IPS=10.20.191.136  more addresses clients may reach this machine on
+#                            (comma-separated), e.g. a second network on a
+#                            laptop with Wi-Fi and USB tethering; none clears it
 #
-# Derived values (TURN URLs, COMPOSE_PROFILES) are rewritten on every run so
-# they always match APP_PUBLIC_HOST and TURN.
+# Derived values (TURN URLs, COMPOSE_PROFILES, the SFU's media addresses and
+# the backend's allowed origins) are rewritten on every run so they always
+# match APP_HOST_IP, APP_PUBLIC_HOST, APP_EXTRA_IPS and TURN.
 set -euo pipefail
 
 ENV_FILE="${ENV_FILE:-.env}"
 IMDS=http://169.254.169.254/latest
 
-opt_host_ip="" opt_ec2="" opt_domain="" opt_https="" opt_http="" opt_turn=""
+opt_host_ip="" opt_ec2="" opt_domain="" opt_https="" opt_http="" opt_turn="" opt_extra_ips=""
 for arg in "$@"; do
     case "$arg" in
         HOST_IP=*) opt_host_ip="${arg#HOST_IP=}" ;;
@@ -27,6 +31,7 @@ for arg in "$@"; do
         HTTPS_PORT=*) opt_https="${arg#HTTPS_PORT=}" ;;
         HTTP_PORT=*) opt_http="${arg#HTTP_PORT=}" ;;
         TURN=*) opt_turn="${arg#TURN=}" ;;
+        EXTRA_IPS=*) opt_extra_ips="${arg#EXTRA_IPS=}" ;;
         *) echo "docker-env: unknown option '$arg'" >&2; exit 1 ;;
     esac
 done
@@ -87,6 +92,12 @@ if [ -n "$opt_domain" ]; then set_key APP_PUBLIC_HOST "$opt_domain"; fi
 if [ -n "$opt_https" ]; then set_key APP_HTTPS_PORT "$opt_https"; fi
 if [ -n "$opt_http" ]; then set_key APP_HTTP_PORT "$opt_http"; fi
 
+case "$opt_extra_ips" in
+    "") ;;
+    none) set_key APP_EXTRA_IPS "" ;;
+    *) set_key APP_EXTRA_IPS "$(echo "$opt_extra_ips" | tr -d ' ')" ;;
+esac
+
 case "$opt_turn" in
     "") ;;
     1|on|yes) set_key APP_TURN_ENABLED 1 ;;
@@ -102,12 +113,26 @@ ensure APP_JWT_SECRET "$(openssl rand -hex 32)"
 ensure APP_HTTPS_PORT 8443
 ensure APP_HTTP_PORT 8088
 ensure APP_MAX_PARTICIPANTS 0
+ensure APP_EXTRA_IPS ""
 ensure APP_TURN_ENABLED 0
 ensure APP_TURN_USER capstone
 ensure APP_TURN_PASSWORD "$(openssl rand -hex 16)"
 
 # --- derived -----------------------------------------------------------------
 host="$(get APP_PUBLIC_HOST)"
+https_port="$(get APP_HTTPS_PORT)"
+extra_ips="$(get APP_EXTRA_IPS)"
+
+# The SFU advertises a media address per IP; each client uses the one it reaches.
+set_key APP_SFU_PUBLIC_IPS "$(get APP_HOST_IP)${extra_ips:+,$extra_ips}"
+
+# A page loaded from any of the hosts may call the API, with or without the port.
+origins=""
+for h in "$host" ${extra_ips//,/ }; do
+    origins+="${origins:+,}https://$h,https://$h:$https_port"
+done
+set_key APP_ALLOWED_ORIGINS "$origins"
+
 if [ "$(get APP_TURN_ENABLED)" = 1 ]; then
     set_key APP_TURN_URLS "turn:$host:3478?transport=udp,turn:$host:3478?transport=tcp,turns:$host:5349?transport=tcp"
     set_key COMPOSE_PROFILES turn
@@ -118,4 +143,4 @@ else
     turn_note="off"
 fi
 
-echo "docker-env: $ENV_FILE ready: host=$host ip=$(get APP_HOST_IP) https=$(get APP_HTTPS_PORT) turn=$turn_note"
+echo "docker-env: $ENV_FILE ready: host=$host ip=$(get APP_HOST_IP) extra_ips=${extra_ips:-none} https=$https_port turn=$turn_note"

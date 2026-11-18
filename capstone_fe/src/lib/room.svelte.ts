@@ -74,12 +74,16 @@ class RoomSession {
 	private subscriberHandles = new Map<PeerId, SubscriberHandle>();
 	private stopEvents: (() => void) | null = null;
 
-	/** Called on the join-streamer screen once the user grants camera access. */
-	setLocalPreview(stream: MediaStream, displayName: string) {
+	/**
+	 * Called on the join-streamer screen once the user grants camera access.
+	 * `requestedFacing` is the camera that was asked for, used when the browser
+	 * doesn't report which way the camera it gave faces.
+	 */
+	setLocalPreview(stream: MediaStream, displayName: string, requestedFacing: FacingMode = 'user') {
 		this.localStream = stream;
 		this.displayName = displayName;
 		const track = stream.getVideoTracks()[0];
-		if (track) this.facingMode = facingModeOf(track, 'user');
+		if (track) this.facingMode = facingModeOf(track, requestedFacing);
 	}
 
 	async startPublishing(roomId: string) {

@@ -10,9 +10,22 @@ export interface SignalingClient {
 	close(): void;
 }
 
+/**
+ * The socket URL for `sfuWsUrl`. An absolute `ws(s)://` URL is used as is; a
+ * path like `/ws` is resolved against `base` (the page) with the matching
+ * `ws(s):` scheme, so the socket goes to whichever address the page was loaded
+ * from. Older browsers' `WebSocket` rejects relative URLs, hence doing it here.
+ */
+export function resolveWsUrl(sfuWsUrl: string, base?: string): string {
+	const url = new URL(sfuWsUrl, base);
+	if (url.protocol === 'https:') url.protocol = 'wss:';
+	if (url.protocol === 'http:') url.protocol = 'ws:';
+	return url.toString();
+}
+
 export function connectSignaling(sfuWsUrl: string): Promise<SignalingClient> {
 	return new Promise((resolve, reject) => {
-		const socket = new WebSocket(sfuWsUrl);
+		const socket = new WebSocket(resolveWsUrl(sfuWsUrl, globalThis.location?.href));
 		const handlers = new Map<ServerMessageType, Set<(msg: ServerMessage) => void>>();
 
 		socket.addEventListener(

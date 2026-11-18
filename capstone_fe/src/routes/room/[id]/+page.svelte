@@ -182,7 +182,13 @@
 		<button
 			class="icon-btn"
 			disabled={roomSession.flippingCamera || roomSession.screenSharing}
-			onclick={() => roomSession.flipCamera().catch(() => alert('Could not switch camera.'))}
+			onclick={() =>
+				roomSession.flipCamera().catch((err) => {
+					console.error('flipCamera failed', err);
+					// The browser's error name (e.g. NotReadableError) says why.
+					const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+					alert(`Could not switch camera.\n${reason}`);
+				})}
 			aria-label="Switch camera"
 		>
 			<Icon name="camera-flip" size={18} />

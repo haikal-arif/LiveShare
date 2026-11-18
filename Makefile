@@ -111,6 +111,8 @@ clean: ## Remove build outputs
 #   HTTPS_PORT=443           gateway HTTPS port on the host (default 8443)
 #   HTTP_PORT=80             gateway HTTP redirect port (default 8088)
 #   TURN=1 | TURN=0          run the TURN relay (coturn) or not
+#   EXTRA_IPS=10.20.191.136  more addresses clients reach this machine on
+#                            (comma-separated; EXTRA_IPS=none clears them)
 #   EMAIL=you@example.com    Let's Encrypt contact, for `make tls`
 #
 # EC2 example:
@@ -119,7 +121,7 @@ clean: ## Remove build outputs
 #   make docker-up
 
 ENV_OPTS = HOST_IP=$(HOST_IP) EC2=$(EC2) DOMAIN=$(DOMAIN) HTTPS_PORT=$(HTTPS_PORT) \
-	HTTP_PORT=$(HTTP_PORT) TURN=$(TURN)
+	HTTP_PORT=$(HTTP_PORT) TURN=$(TURN) EXTRA_IPS=$(EXTRA_IPS)
 
 env-file: ## Create or update .env from the options (keeps existing values)
 	@./scripts/docker-env.sh $(ENV_OPTS)
@@ -168,20 +170,18 @@ tls: env-file ## Get a Let's Encrypt cert for DOMAIN (EC2; needs EMAIL=)
 	echo "tls: certificate for $$domain installed; https://$$domain:$$port"
 
 # Full LAN run. The IP is re-detected and the cert regenerated on every run,
-# since both depend on the current network. Ctrl-C (SIGINT/SIGTERM), a failed
-# step, or the logs ending all go through cleanup: it first stops the SFU so
-# it tells every open room `room_closed` while the gateway is still up, then
-# tears the stack down and closes the firewall.
+# since both depend on the current network. The IP goes through docker-env.sh,
+# so APP_PUBLIC_HOST (and the TURN URLs) follow it unless a domain is set.
+# Ctrl-C (SIGINT/SIGTERM), a failed step, or the logs ending all go through
+# cleanup: it first stops the SFU so it tells every open room `room_closed`
+# while the gateway is still up, then tears the stack down and closes the
+# firewall.
 run-all: env-file ## Detect LAN IP, refresh cert, open firewall, up, attach to logs (Ctrl-C tears down)
 	@set -e; \
 	ip=$$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($$i=="src") print $$(i+1)}'); \
 	[ -n "$$ip" ] || { echo "could not detect LAN IP" >&2; exit 1; }; \
 	echo "LAN IP: $$ip"; \
-	if grep -q '^APP_HOST_IP=' .env; then \
-		sed -i "s/^APP_HOST_IP=.*/APP_HOST_IP=$$ip/" .env; \
-	else \
-		echo "APP_HOST_IP=$$ip" >> .env; \
-	fi; \
+	./scripts/docker-env.sh HOST_IP=$$ip; \
 	./gateway/gen-cert.sh; \
 	cleanup() { \
 		trap - EXIT; \

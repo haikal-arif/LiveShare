@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { connectSignaling } from './signaling';
+import { connectSignaling, resolveWsUrl } from './signaling';
 
 type Listener = (event: unknown) => void;
 
@@ -51,6 +51,15 @@ describe('connectSignaling', () => {
 		socket.emit('open', {});
 
 		await expect(pending).resolves.toBeTruthy();
+	});
+
+	it('connects a path like /ws to the host the page was loaded from', () => {
+		vi.stubGlobal('WebSocket', FakeWebSocket);
+		vi.stubGlobal('location', { href: 'https://10.20.191.136/room/ABC-123?role=publisher' });
+
+		void connectSignaling('/ws');
+
+		expect(FakeWebSocket.instances[0].url).toBe('wss://10.20.191.136/ws');
 	});
 
 	it('rejects if the socket errors before opening', async () => {
@@ -125,5 +134,42 @@ describe('connectSignaling', () => {
 		await pending;
 
 		expect(() => socket.emit('message', { data: 'not json' })).not.toThrow();
+	});
+});
+
+describe('resolveWsUrl', () => {
+	it.each([
+		{
+			name: 'keeps an absolute wss URL',
+			url: 'wss://sfu.example.com/ws',
+			base: 'https://other.example.com/room/x',
+			want: 'wss://sfu.example.com/ws'
+		},
+		{
+			name: 'keeps an absolute ws URL without a page',
+			url: 'ws://127.0.0.1:9000/ws',
+			base: undefined,
+			want: 'ws://127.0.0.1:9000/ws'
+		},
+		{
+			name: 'resolves a path against an https page as wss',
+			url: '/ws',
+			base: 'https://10.184.84.16/room/ABC-123',
+			want: 'wss://10.184.84.16/ws'
+		},
+		{
+			name: 'keeps the page port',
+			url: '/ws',
+			base: 'https://10.20.191.136:8443/room/ABC-123',
+			want: 'wss://10.20.191.136:8443/ws'
+		},
+		{
+			name: 'resolves a path against an http page as ws',
+			url: '/ws',
+			base: 'http://localhost:5173/',
+			want: 'ws://localhost:5173/ws'
+		}
+	])('$name', ({ url, base, want }) => {
+		expect(resolveWsUrl(url, base)).toBe(want);
 	});
 });
