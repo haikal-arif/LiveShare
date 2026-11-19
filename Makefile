@@ -12,6 +12,9 @@ BE_DIR  := capstone_be
 FE_DIR  := capstone_fe
 SFU_DIR := capstone_sfu
 
+# Name announced over mDNS by run-all (needs avahi-utils on Linux).
+MDNS_NAME ?= flashlive.local
+
 -include $(BE_DIR)/.env $(SFU_DIR)/.env
 export
 
@@ -183,10 +186,12 @@ run-all: env-file ## Detect LAN IP, refresh cert, open firewall, up, attach to l
 	echo "LAN IP: $$ip"; \
 	./scripts/docker-env.sh HOST_IP=$$ip; \
 	./gateway/gen-cert.sh; \
+	avahi_pid=; \
 	cleanup() { \
 		trap - EXIT; \
 		echo; \
 		echo "Shutting down..."; \
+		[ -z "$$avahi_pid" ] || kill $$avahi_pid 2>/dev/null || true; \
 		docker compose stop sfu || echo "sfu stop failed"; \
 		docker compose down || echo "compose down failed"; \
 		./firewall.sh close; \
@@ -195,6 +200,12 @@ run-all: env-file ## Detect LAN IP, refresh cert, open firewall, up, attach to l
 	trap 'exit 130' INT; \
 	trap 'exit 143' TERM; \
 	./firewall.sh open; \
+	if command -v avahi-publish >/dev/null 2>&1; then \
+		avahi-publish -a -R $(MDNS_NAME) $$ip >/dev/null 2>&1 & avahi_pid=$$!; \
+		echo "mDNS: $(MDNS_NAME) -> $$ip"; \
+	else \
+		echo "avahi-publish not found; skipping $(MDNS_NAME) (install avahi-utils)"; \
+	fi; \
 	docker compose up -d --build; \
 	docker compose restart gateway; \
 	echo "up: https://$$ip:$$(grep ^APP_HTTPS_PORT= .env | cut -d= -f2)"; \
