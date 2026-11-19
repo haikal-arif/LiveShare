@@ -185,7 +185,7 @@ run-all: env-file ## Detect LAN IP, refresh cert, open firewall, up, attach to l
 	[ -n "$$ip" ] || { echo "could not detect LAN IP" >&2; exit 1; }; \
 	echo "LAN IP: $$ip"; \
 	./scripts/docker-env.sh HOST_IP=$$ip; \
-	./gateway/gen-cert.sh; \
+	./gateway/gen-cert.sh $(MDNS_NAME); \
 	avahi_pid=; \
 	cleanup() { \
 		trap - EXIT; \
