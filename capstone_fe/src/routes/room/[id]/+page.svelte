@@ -482,6 +482,8 @@
 		padding: 12px;
 		border-radius: 999px;
 		background: var(--bg-elevated);
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	.ended {
