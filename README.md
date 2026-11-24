@@ -2,6 +2,9 @@
 
 A web app for events. People near the front share their phone camera, and people at the back watch those streams, arranged on a map of the venue. It runs on a laptop on the venue's Wi-Fi, or on a cloud server when participants aren't on the same network.
 
+## 🚨 Disclaimer
+This project was created for learning and portfolio purposes only. It is not affiliated with any company, client, or organization. All names, data, and assets used in this project are fictionalized or sanitized for public use.
+
 ## Overview & Assumptions
 
 1. There are three roles. The **admin** creates the room, **sharers** publish their camera, and **watchers** view the streams. Nobody logs in.
